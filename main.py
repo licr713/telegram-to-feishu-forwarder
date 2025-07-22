@@ -17,7 +17,6 @@ logging.basicConfig(
 # --- 全局变量 ---
 CONFIG_FILE = 'config.ini'
 SESSION_FILE = 'telegram_forwarder.session'
-MESSAGE_QUEUE = asyncio.Queue()  # 新增：全局消息队列
 
 # --- 配置文件处理 ---
 def create_config_interactively():
@@ -119,22 +118,21 @@ async def main():
     client = TelegramClient(SESSION_FILE, api_id, api_hash)
 
     async with aiohttp.ClientSession() as http_session:
-        # 新增：worker 协程，按4秒一条速率转发消息
+        message_queue = asyncio.Queue()  # 在事件循环内创建队列
+
         async def feishu_worker():
             while True:
-                text = await MESSAGE_QUEUE.get()
+                text = await message_queue.get()
                 await send_to_feishu(http_session, text, feishu_webhook_url)
                 await asyncio.sleep(4)  # 限流：每4秒1条
 
-        # 启动worker
         asyncio.create_task(feishu_worker())
 
         @client.on(events.NewMessage(chats=target_channel_username))
         async def message_handler(event):
             logging.info(f"监听到来自频道 '{target_channel_username}' 的新消息。")
             message_text = event.message.raw_text
-            # 所有消息先入队
-            await MESSAGE_QUEUE.put(message_text)
+            await message_queue.put(message_text)
 
         try:
             await client.start()
