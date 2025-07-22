@@ -17,6 +17,7 @@ logging.basicConfig(
 # --- 全局变量 ---
 CONFIG_FILE = 'config.ini'
 SESSION_FILE = 'telegram_forwarder.session'
+MESSAGE_QUEUE = asyncio.Queue()  # 新增：全局消息队列
 
 # --- 配置文件处理 ---
 def create_config_interactively():
@@ -115,19 +116,26 @@ async def main():
         logging.error("请删除旧的配置文件，然后重新运行脚本以生成新的正确配置。")
         return
 
-    # 2. 初始化并登录 Telegram 客户端
     client = TelegramClient(SESSION_FILE, api_id, api_hash)
-    
+
     async with aiohttp.ClientSession() as http_session:
+        # 新增：worker 协程，按4秒一条速率转发消息
+        async def feishu_worker():
+            while True:
+                text = await MESSAGE_QUEUE.get()
+                await send_to_feishu(http_session, text, feishu_webhook_url)
+                await asyncio.sleep(4)  # 限流：每4秒1条
+
+        # 启动worker
+        asyncio.create_task(feishu_worker())
+
         @client.on(events.NewMessage(chats=target_channel_username))
         async def message_handler(event):
-            """消息处理与转发"""
             logging.info(f"监听到来自频道 '{target_channel_username}' 的新消息。")
             message_text = event.message.raw_text
-            # 使用异步函数发送
-            await send_to_feishu(http_session, message_text, feishu_webhook_url)
+            # 所有消息先入队
+            await MESSAGE_QUEUE.put(message_text)
 
-        # 3. 启动客户端并持续运行
         try:
             await client.start()
             logging.info("成功登录 Telegram。")
